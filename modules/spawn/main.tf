@@ -13,6 +13,9 @@
 # 子の Output は terraform_remote_state で親に読み戻す。
 #
 # シェルがやるのは「ディレクトリを掘る」「terraform を起動する」だけ。
+#
+# Phase 5: このリソースが destroy されると、子プロセスも terraform destroy する。
+# 子がさらに子を持っていれば、それも連鎖して destroy される。
 # ---------------------------------------------------------------
 
 variable "name" {
@@ -74,6 +77,25 @@ resource "terraform_data" "process" {
       terraform -chdir="$CONFIG_DIR" apply -input=false -auto-approve -no-color > "$RUN_DIR/apply.log" 2>&1 \
         || { tail -n 30 "$RUN_DIR/apply.log"; exit 1; }
       echo "✅ $(date +%T) done:            $RUN_NAME"
+    EOT
+  }
+
+  # Phase 5: Terraform Destroy
+  # 親が destroy されたら、子も terraform destroy してから State ごと消す
+  provisioner "local-exec" {
+    when        = destroy
+    quiet       = true
+    environment = self.input.env
+    command     = <<-EOT
+      set -e
+      if [ -d "$TF_DATA_DIR" ]; then
+        terraform -chdir="$CONFIG_DIR" destroy -input=false -auto-approve -no-color > "$RUN_DIR/destroy.log" 2>&1 \
+          || { tail -n 30 "$RUN_DIR/destroy.log"; exit 1; }
+        # 孫以下の destroy ログを親にも見せる
+        grep '💥' "$RUN_DIR/destroy.log" | sed 's/.*(local-exec): //' || true
+      fi
+      rm -rf "$RUN_DIR"
+      echo "💥 $(date +%T) destroyed:       $RUN_NAME"
     EOT
   }
 }

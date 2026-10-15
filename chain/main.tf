@@ -9,6 +9,8 @@
 #      sha256(height|prev_hash|miner|p|nonce) が 0 * difficulty で始まるものを探す
 #   4. 採用ルール（ハッシュ値が最小の候補）でブロックを 1 つ選ぶ
 #   5. チェーン全体を HCL で検証し、通ったら台帳に書き込む
+#
+# terraform destroy すると、ブロックも台帳も Miner も全部消える。
 # ---------------------------------------------------------------
 
 terraform {
@@ -174,6 +176,17 @@ resource "terraform_data" "block" {
       error_message = "ブロック #${each.value} の検証に失敗しました: ${jsonencode(try(local.verifications[each.value], {}))}"
     }
   }
+
+  # Phase 5: Terraform で素数を構築し、Terraform で素数を破壊する
+  provisioner "local-exec" {
+    when  = destroy
+    quiet = true
+    environment = {
+      HEIGHT = self.input.height
+      PRIME  = self.input.prime
+    }
+    command = "echo \"💥 Block #$HEIGHT destroyed. prime $PRIME is gone.\""
+  }
 }
 
 # 検証に通ったチェーンを台帳に書き込む。
@@ -192,6 +205,20 @@ resource "terraform_data" "ledger" {
   }
 
   depends_on = [terraform_data.block]
+}
+
+# Phase 5: terraform destroy で台帳ごと消す（= チェーンはジェネシスに戻る）。
+# ledger は毎ブロック replace されるので、そちらに destroy 時の処理を書くと
+# 掘るたびに台帳が消えてしまう。なので消す係は別のリソースにする。
+resource "terraform_data" "ledger_file" {
+  input = local.ledger
+
+  provisioner "local-exec" {
+    when        = destroy
+    quiet       = true
+    environment = { LEDGER = self.input }
+    command     = "rm -f \"$LEDGER\" && echo \"💥 ledger.json destroyed. PrimeChain is gone.\""
+  }
 }
 
 # ---------------------------------------------------------------

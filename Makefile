@@ -1,7 +1,7 @@
 TF ?= terraform
 APPLY = apply -input=false -auto-approve
 
-.PHONY: help prime recursive pool mine explorer tamper clean
+.PHONY: help prime recursive pool mine explorer tamper destroy clean
 
 help:
 	@echo "make prime     [START=1 END=100]           # Phase 1: HCL だけで素数を探す"
@@ -10,6 +10,7 @@ help:
 	@echo "make mine      [BLOCKS=1]                  # Phase 4: PrimeChain のブロックを掘る"
 	@echo "make explorer                              # Phase 4: チェーンの中身を見る"
 	@echo "make tamper    [BLOCK=0]                   # Phase 4: 台帳を改ざんする（要 jq）"
+	@echo "make destroy                               # Phase 5: terraform destroy で全部壊す"
 	@echo "make clean                                 # State や .terraform を全部消す"
 
 # Phase 1: Prime Discovery
@@ -57,6 +58,18 @@ tamper:
 	jq '.[$(BLOCK)].prime = 4' chain/ledger.json > chain/ledger.tampered.json
 	mv chain/ledger.tampered.json chain/ledger.json
 	@echo "😈 Block #$(BLOCK) の prime を 4 に書き換えました"
+
+# Phase 5: Terraform Destroy
+# 親を destroy すると子 Terraform も連鎖して destroy される
+destroy:
+	@for d in chain pool recursive prime-discovery; do \
+		if [ -d $$d/.terraform ]; then \
+			echo "== terraform destroy: $$d"; \
+			$(TF) -chdir=$$d destroy -input=false -auto-approve -no-color > $$d/destroy.log 2>&1 \
+				|| { sed -n '/^Error/,$$p' $$d/destroy.log; exit 1; }; \
+			grep -E '💥|Destroy complete' $$d/destroy.log | sed 's/.*(local-exec): //'; \
+		fi; \
+	done
 
 clean:
 	find . \( -name .terraform -o -name .runs \) -type d -prune -exec rm -rf {} +

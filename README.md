@@ -26,6 +26,24 @@ Terraform（HCL）だけで素数をマイニングし、ブロックチェー�
 | `phase-2-recursive-terraform` | Terraform から Terraform を再帰起動する |
 | `phase-3-distributed-mining` | 複数の Terraform Miner を並列で動かす |
 | `phase-4-primechain` | 素数でブロックを掘ってブロックチェーンにする |
+| `phase-5-terraform-destroy` | `terraform destroy` で全部壊す（= `main`） |
+
+```sh
+git switch phase-3-distributed-mining   # Phase 3 の完成形に飛ぶ
+make clean                              # ブランチを切り替えたら一度掃除しておくと安全
+```
+
+## ディレクトリ構成
+
+```
+modules/prime/    Phase 1  HCL だけの素数判定
+prime-discovery/  Phase 1  素数を Output するだけのルートモジュール
+modules/spawn/    Phase 2  Terraform から Terraform を起動する（Phase 5 で destroy も連鎖）
+recursive/        Phase 2  自分自身を再帰起動して範囲を分割統治
+miner/            Phase 3  1 プロセス = 1 Miner（Phase 4 でブロック候補も掘る）
+pool/             Phase 3  Miner を並列に起動する親
+chain/            Phase 4  PrimeChain 本体
+```
 
 ## Phase 1: Prime Discovery
 
@@ -151,3 +169,53 @@ Error: Resource precondition failed
 
 最初は「自分自身の `terraform.tfstate` の Output を `jsondecode(file())` で読む」方式にしましたが、apply 中に Terraform が State を書き換えるので、plan 時と apply 時で値が変わって Terraform が panic しました。
 なので検証済みのチェーンを `jsonencode` した JSON を、`terraform_data` + `local-exec` で `ledger.json` に置いています（シェルはファイルを置くだけ）。
+
+## Phase 5: Terraform Destroy
+
+```sh
+make destroy
+```
+
+最後に Terraform 本来の機能、`terraform destroy` を実行します。
+
+- [modules/spawn/main.tf](modules/spawn/main.tf): `when = destroy` の provisioner で、子 Terraform も `terraform destroy` してから State ごと消す。子が孫を持っていれば連鎖する
+- [chain/main.tf](chain/main.tf): ブロックを destroy すると素数が消え、台帳（`ledger.json`）も消える。次の `make mine` はジェネシスから
+
+```
+== terraform destroy: chain
+💥 ledger.json destroyed. PrimeChain is gone.
+💥 Block #0 destroyed. prime 101 is gone.
+💥 Block #2 destroyed. prime 1103 is gone.
+💥 Block #1 destroyed. prime 593 is gone.
+💥 23:39:16 destroyed:       miner-02
+...
+== terraform destroy: recursive
+💥 23:39:19 destroyed:       root.R.L.L
+💥 23:39:19 destroyed:       root.R.L.R
+💥 23:39:19 destroyed:       root.R.L
+...
+💥 23:39:19 destroyed:       root.L
+Destroy complete! Resources: 2 destroyed.
+== terraform destroy: prime-discovery
+Destroy complete! Resources: 0 destroyed.
+```
+
+recursive は親から見るとリソース 2 個ですが、その裏で 14 個の Terraform プロセスが連鎖して destroy されています。
+そして Phase 1 の素数は、そもそもリソースではなかったので **0 destroyed** です。
+
+**Terraform で素数を構築し、Terraform で素数を破壊する。**
+
+## LT デモの流れ（例）
+
+```sh
+make clean
+make prime END=100             # Phase 1: terraform apply で素数が出る
+make recursive END=8000 LEAF=1000  # Phase 2: 15 プロセスの再帰木
+make pool MINERS=8 END=100000  # Phase 3: 8 台並列（約 40 秒）
+make mine BLOCKS=5             # Phase 4: ブロックを掘る
+make explorer
+make tamper BLOCK=1 && make mine   # 改ざん → plan で検知されて落ちる
+make destroy                   # Phase 5: 全部壊す
+```
+
+*All You Need Is Terraform.*
