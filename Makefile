@@ -1,18 +1,28 @@
 TF ?= terraform
+APPLY = apply -input=false -auto-approve
 
-START ?= 1
-END   ?= 100
-
-.PHONY: help prime clean
+.PHONY: help prime recursive clean
 
 help:
-	@echo "make prime [START=1 END=100]  # Phase 1: HCL だけで素数を探す"
-	@echo "make clean                    # state や .terraform を全部消す"
+	@echo "make prime     [START=1 END=100]           # Phase 1: HCL だけで素数を探す"
+	@echo "make recursive [START=1 END=2000 LEAF=500] # Phase 2: Terraform が Terraform を再帰起動"
+	@echo "make clean                                 # State や .terraform を全部消す"
 
 # Phase 1: Prime Discovery
+prime: START ?= 1
+prime: END   ?= 100
 prime:
 	$(TF) -chdir=prime-discovery init -input=false >/dev/null
-	$(TF) -chdir=prime-discovery apply -input=false -auto-approve -var start=$(START) -var end=$(END)
+	$(TF) -chdir=prime-discovery $(APPLY) -var start=$(START) -var end=$(END)
+
+# Phase 2: Recursive Terraform
+recursive: START ?= 1
+recursive: END   ?= 2000
+recursive: LEAF  ?= 500
+recursive:
+	$(TF) -chdir=recursive init -input=false >/dev/null
+	$(TF) -chdir=recursive $(APPLY) -var start=$(START) -var end=$(END) -var leaf_size=$(LEAF)
+	$(TF) -chdir=recursive output tree
 
 clean:
 	find . \( -name .terraform -o -name .runs \) -type d -prune -exec rm -rf {} +
