@@ -23,6 +23,7 @@ Terraform（HCL）だけで素数をマイニングし、ブロックチェー�
 |---|---|
 | `phase-1-prime-discovery` | HCL だけで素数を探す |
 | `phase-2-recursive-terraform` | Terraform から Terraform を再帰起動する |
+| `phase-3-distributed-mining` | 複数の Terraform Miner を並列で動かす |
 
 ## Phase 1: Prime Discovery
 
@@ -64,3 +65,23 @@ State は `recursive/.runs/<node_id>/terraform.tfstate` に 1 プロセス 1 つ
 
 > **ハマりどころ**: 設定ディレクトリ直下に `terraform.tfstate` があると、子の `terraform init` がそれを「移行すべき旧 State」とみなして親のロックとぶつかります。
 > なので直接 apply したときの State も `backend "local" { path = ".runs/root/terraform.tfstate" }` に逃がしています。
+
+## Phase 3: Distributed Prime Mining
+
+```sh
+make pool                           # 4 台の Miner で [1, 20000)
+make pool MINERS=8 END=100000       # 8 台の Miner で [1, 100000)
+```
+
+- [pool/main.tf](pool/main.tf): 親。探索範囲を Miner の数で割り、`for_each` で Miner を並列に起動する
+- [miner/main.tf](miner/main.tf): 1 プロセス = 1 Miner。割り当てられた範囲の素数を探す
+
+Terraform はデフォルトで 10 個までのリソースを並列に処理するので、Miner も勝手に並列で動きます。
+各 Miner は `pool/.runs/miner-XX/terraform.tfstate` に自分専用の State を持つので、State のロック競合は起きません。
+
+```
+miner-01: [1, 5001) → 669 primes
+miner-02: [5001, 10001) → 560 primes
+miner-03: [10001, 15001) → 525 primes
+miner-04: [15001, 20000) → 508 primes
+```
