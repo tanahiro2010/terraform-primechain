@@ -4,3 +4,4 @@
 *.tfstate.*
 .runs/
 *.log
+ledger.json

@@ -14,6 +14,7 @@ Terraform（HCL）だけで素数をマイニングし、ブロックチェー�
 
 - Terraform >= 1.5（動作確認: v1.16.6）
 - make
+- jq（`make tamper` を使うときだけ）
 
 ## Phase ごとのブランチ
 
@@ -24,6 +25,7 @@ Terraform（HCL）だけで素数をマイニングし、ブロックチェー�
 | `phase-1-prime-discovery` | HCL だけで素数を探す |
 | `phase-2-recursive-terraform` | Terraform から Terraform を再帰起動する |
 | `phase-3-distributed-mining` | 複数の Terraform Miner を並列で動かす |
+| `phase-4-primechain` | 素数でブロックを掘ってブロックチェーンにする |
 
 ## Phase 1: Prime Discovery
 
@@ -73,6 +75,8 @@ make pool                           # 4 台の Miner で [1, 20000)
 make pool MINERS=8 END=100000       # 8 台の Miner で [1, 100000)
 ```
 
+Phase 1 の 1 プロセスで [1, 100000) を探すと約 2 分かかりますが、8 台の Miner なら約 40 秒です（M シリーズ Mac で計測）。
+
 - [pool/main.tf](pool/main.tf): 親。探索範囲を Miner の数で割り、`for_each` で Miner を並列に起動する
 - [miner/main.tf](miner/main.tf): 1 プロセス = 1 Miner。割り当てられた範囲の素数を探す
 
@@ -85,3 +89,65 @@ miner-02: [5001, 10001) → 560 primes
 miner-03: [10001, 15001) → 525 primes
 miner-04: [15001, 20000) → 508 primes
 ```
+
+## Phase 4: PrimeChain
+
+```sh
+make mine              # ブロックを 1 個掘る
+make mine BLOCKS=5     # 5 個掘る
+make explorer          # チェーンを見る
+make tamper BLOCK=1    # 台帳のブロック #1 の素数を 4 に改ざんする → 次の make mine が plan で落ちる
+make clean             # 台帳ごと全部消す
+```
+
+**`terraform apply` 1 回 = ブロック 1 個の採掘** です。
+
+1. 台帳（`chain/ledger.json`）から前回までのチェーンを読む
+2. 次のブロックの探索範囲（ブロックごとに `window` ずつ進む）を Miner に割り振って並列に起動
+3. 各 Miner は見つけた素数 `p` と `nonce` の全組み合わせで `sha256("height|prev_hash|miner|p|nonce")` を計算し、先頭が `0` × `difficulty` になるものを探す
+4. 採用ルール: 条件を満たした候補のうち、ハッシュ値が最小のものを採用
+5. チェーン全体を HCL で検証し、通ったら台帳に書き込む
+
+```
+⛏  Block #7 mined by miner-01: prime=2837 nonce=9 hash=00040e90b46f2c29... (4 candidates, 2816 hashes)
+
+#0   001817dc39715b1f ← 0000000000000000  miner-01 prime=101    nonce=23
+#1   0008d290675e22b3 ← 001817dc39715b1f  miner-02 prime=593    nonce=19
+#2   001d824ab4d1be8c ← 0008d290675e22b3  miner-04 prime=1103   nonce=48
+...
+```
+
+ブロックの中身:
+
+| フィールド | 内容 |
+|---|---|
+| `height` | ブロック番号 |
+| `prev_hash` | 前ブロックのハッシュ（#0 は `0` × 64） |
+| `miner` | 採掘した Miner |
+| `prime` | 発見した素数 |
+| `nonce` | Nonce |
+| `difficulty` | 難易度 |
+| `hash` | `sha256("height\|prev_hash\|miner\|prime\|nonce")` |
+
+### 検証
+
+[chain/main.tf](chain/main.tf) の `terraform_data.block` は 1 ブロック = 1 リソースで、`precondition` で次の 5 つを検証します。
+
+- `height`: ブロック番号が連番
+- `link`: `prev_hash` が前ブロックの `hash` と一致
+- `hash`: `hash` が中身から再計算した値と一致
+- `work`: `hash` が難易度条件を満たす
+- `prime`: `prime` が本当に素数
+
+過去のブロックは plan の時点で検証されるので、台帳を改ざんすると Miner を起動する前に落ちます。
+
+```
+Error: Resource precondition failed
+ブロック #1 の検証に失敗しました:
+{"hash":false,"height":true,"link":true,"prime":false,"work":true}
+```
+
+### 台帳の置き場所
+
+最初は「自分自身の `terraform.tfstate` の Output を `jsondecode(file())` で読む」方式にしましたが、apply 中に Terraform が State を書き換えるので、plan 時と apply 時で値が変わって Terraform が panic しました。
+なので検証済みのチェーンを `jsonencode` した JSON を、`terraform_data` + `local-exec` で `ledger.json` に置いています（シェルはファイルを置くだけ）。
